@@ -45,37 +45,11 @@ def symmetry_bc(V):
 
 bcs = symmetry_bc(V)
 
-# facets = mesh.locate_entities_boundary(
-#     msh, dim=2, marker=lambda x: np.isclose(x[0], 0.0) | np.isclose(x[1], 1.0)
-# )
-# bc = fem.dirichletbc(
-#     np.zeros(3, dtype=dtype),
-#     fem.locate_dofs_topological(V, entity_dim=2, entities=facets),
-#     V=V,
-# )
-
-# bcs = [bc]
-
 basix_celltype = getattr(basix.CellType, msh.topology.cell_type.name)
 quadrature_points, weights = basix.make_quadrature(basix_celltype, quadrature_degree)
 
-map_c = msh.topology.index_map(msh.topology.dim)
-num_cells = map_c.size_local + map_c.num_ghosts
-cells = np.arange(0, num_cells, dtype=np.float64)
 
-# Tabulate basis functions at quadrature points
-# (derivative, point, basis fn index, value index)
-# phi = V.element.basix_element.tabulate(1, quadrature_points)[0, :, :, 0]
-
-phi = V.element.basix_element.tabulate(1, quadrature_points)
-
-phig = cmap.element.basix_element.tabulate(1, quadrature_points)
-
-
-gdim = msh.topology.dim
-dim = V.element.space_dimension
-
-
+@numba.njit
 def detJ(x):
     return abs((x[0, 0] - x[7, 0]) * (x[0, 1] - x[7, 1]) * (x[0, 2] - x[7, 2]))
 
@@ -97,60 +71,71 @@ c_signature = types.void(
     types.CPointer(types.uint8),  # const uint8_t *quadrature_permutation
 )
 
-print(basix.index(1, 0, 0))
-print(basix.index(0, 1, 0))
-print(basix.index(0, 0, 1))
+# Tabulate basis functions at quadrature points
+# (derivative, point, basis fn index, value index)
+
+phi = V.element.basix_element.tabulate(1, quadrature_points)
+
+phig = cmap.element.basix_element.tabulate(1, quadrature_points)
+
+gdim = msh.topology.dim
+dim = V.element.space_dimensionJ
 
 
 # Map to physical reference frame
 @numba.cfunc(c_signature, nopython=True)
 def tabulate_A(A_, w_, c_, coords_, entity_local_index, quadrature_permutation=None):
     # Wrap pointers as a Numpy arrays
-    nQ = len(quadrature_points)
-    n_phi = np.int64(dim / gdim)
+    nQ = len(quadrature_points)  # Number of integration points
+    n_phi = np.int64(dim / gdim)  # Number of basis functions
     A_full = numba.carray(A_, (dim, dim), dtype=dtype)
 
-    J = np.zeros((nQ, gdim, gdim))
-    K = np.zeros((nQ, gdim, gdim))
+    J = np.zeros((nQ, gdim, gdim))  # Element Jacobian
+    K = np.zeros((nQ, gdim, gdim))  # Element inverse Jacobian
 
-    dphidX = np.zeros((gdim, gdim))
-    dphidx_T = np.zeros((gdim, gdim))
-    dphidx = np.zeros((gdim, gdim))
+    dphidX = np.zeros((gdim, gdim))  # derivative of basis w.r.t reference element
+    dphidx_T = np.zeros(
+        (gdim, gdim)
+    )  # derivative of basis w.r.t physical coordinates (Transposed), indexed against i
+    dphidx = np.zeros(
+        (gdim, gdim)
+    )  # derivative of basis w.r.t physical coordinates, indexed against j
 
-    x = numba.carray(coords_, (n_phi, gdim), dtype=dtype)
-    scale = abs((x[0, 0] - x[7, 0]) * (x[0, 1] - x[7, 1]) * (x[0, 2] - x[7, 2]))
+    x = numba.carray(coords_, (n_phi, gdim), dtype=dtype)  # Element coordinates
+    scale = detJ(x)  # detJ = Element volume
 
+    # Obtain Element inverse Jacobian from mesh element basis
+    # J = dx/dX = dφ/dX * x
     for p in range(nQ):
-        # nprint(phig[1 : gdim + 1, p, :, 0])
         dPhi_g = phig[1 : gdim + 1, p, :, 0]
         _J = J[p, :, :]
         _J = x.T @ dPhi_g.T
-        # nprint(np.linalg.inv(_J))
         K[p, :, :] = np.linalg.inv(_J)
 
+        # Material properties
+        D = np.zeros((6, 6))  # D matrix
+        E = 200000.0
+        nu = 0.3
+
+        lmbda = E * nu / ((1.0 + nu) * (1.0 - 2.0 * nu))
+        mu = E / (2.0 * (1.0 + nu))
+
+        for p in range(3):
+            for q in range(3):
+                D[p, q] = lmbda
+            D[p, p] = lmbda + 2.0 * mu
+
+        for p in range(3, 6):
+            D[p, p] = mu
+
+    # Assemble element mass matrix
     for k in range(nQ):
         for i in range(n_phi):
             for j in range(n_phi):
-                D = np.zeros((6, 6))
+                B = np.zeros((6, 3))  # Strain-displacement matrix
+                B_T = np.zeros((3, 6))  # Strain-displacement matrix (Transposed)
 
-                E = 200000.0
-                nu = 0.3
-
-                lmbda = E * nu / ((1.0 + nu) * (1.0 - 2.0 * nu))
-                mu = E / (2.0 * (1.0 + nu))
-
-                for p in range(3):
-                    for q in range(3):
-                        D[p, q] = lmbda
-                    D[p, p] = lmbda + 2.0 * mu
-
-                for p in range(3, 6):
-                    D[p, p] = mu
-
-                B_T = np.zeros((3, 6))
-
-                B = np.zeros((6, 3))
-
+                # Basis derivatives w.r.t reference element (dφ/dX)
                 for p in range(3):
                     dphidX[p, 0] = phi[1, k, i, 0]
                     dphidX[p, 1] = phi[2, k, i, 0]
@@ -158,7 +143,8 @@ def tabulate_A(A_, w_, c_, coords_, entity_local_index, quadrature_permutation=N
 
                 dphidx_T[:] = 0
 
-                # Convert to basis derivatives with respect to physical element
+                # Convert to basis derivatives w.r.t physical element
+                # dφ/dx = (dx/dX)^-1(dφ/dX)
                 for p in range(3):
                     for q in range(3):
                         for r in range(3):
@@ -192,7 +178,6 @@ def tabulate_A(A_, w_, c_, coords_, entity_local_index, quadrature_permutation=N
                     for q in range(3):
                         for r in range(3):
                             # multiply by transpose of K
-                            # dphidx[p, q] += K[k, r, p] * dphidX[r, q]
                             dphidx[p, q] += K[k, r, p] * dphidX[r, q]
 
                 B[0, 0] = dphidx[0, 0]
@@ -229,9 +214,6 @@ def tabulate_A(A_, w_, c_, coords_, entity_local_index, quadrature_permutation=N
         for j in range(dim):  # column j
             A_full[i, j] = scale * A_full[i, j]
 
-    # nprint(A_full)
-    # print(A_)
-
 
 @numba.cfunc(c_signature, nopython=True)
 def tabulate_b(b_, w_, c_, coords_, entity_local_index, quadrature_permutation=None):
@@ -257,7 +239,7 @@ def tabulate_b(b_, w_, c_, coords_, entity_local_index, quadrature_permutation=N
     body_force = np.array([1.0, 0.0, 0.0], dtype=dtype)
 
     # detJ scaling (same as in tabulate_A)
-    scale = abs((x[0, 0] - x[7, 0]) * (x[0, 1] - x[7, 1]) * (x[0, 2] - x[7, 2]))
+    scale = detJ(x)
 
     # Compute Jacobian and inverse at each quadrature point
     for p in range(n_phi):
@@ -313,14 +295,15 @@ def tabulate_b(b_, w_, c_, coords_, entity_local_index, quadrature_permutation=N
                     b_full[3 * i + j] += weights[k] * (N_T[j, p1] * body_force[p1])
 
                 # Traction term (N^T * t) can be added here later if needed
-    # nprint(b_full)
 
     # Multiply by detJ (scale)
     for i in range(dim):
         b_full[i] = scale * b_full[i]
 
-    # nprint(b_full)
 
+map_c = msh.topology.index_map(msh.topology.dim)
+num_cells = map_c.size_local + map_c.num_ghosts
+cells = np.arange(0, num_cells, dtype=np.float64)
 
 active_coeffs = np.array([], dtype=np.int8)
 
@@ -363,16 +346,6 @@ L = fem.Form(
 A = fem.petsc.assemble_matrix(a, bcs=bcs)
 A.assemble()
 
-# # Convert to dense format
-# A_dense = PETSc.Mat().createDense(A.getSize())
-# A.copy(A_dense)
-
-# # Get numpy array
-# A_numpy = A_dense.getDenseArray()
-
-# print(A_numpy)
-# np.savetxt("A_matrix.txt", A_numpy, fmt="%.6f")
-# exit()
 b = fem.petsc.assemble_vector(L)
 fem.petsc.apply_lifting(b, [a], bcs=[bcs])
 b.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
@@ -382,15 +355,11 @@ for bc in bcs:
 ksp = PETSc.KSP().create(MPI.COMM_WORLD)
 ksp.setType("preonly")
 ksp.getPC().setType("lu")
-# ksp.getPC().setFactorSolverType("mumps")
-# A.setOption(PETSc.Mat.Option.SPD, 1)
 ksp.setOperators(A)
 x = A.getVecRight()
 ksp.solve(b, x)
 
 u.x.array[:] = x
-
-print(u.x.array[:])
 
 vtkfile = io.VTKFile(msh.comm, "results/u", "w")
 vtkfile.write_function(u, 0.0)
