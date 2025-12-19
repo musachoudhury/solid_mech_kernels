@@ -79,7 +79,7 @@ phi = V.element.basix_element.tabulate(1, quadrature_points)
 phig = cmap.element.basix_element.tabulate(1, quadrature_points)
 
 gdim = msh.topology.dim
-dim = V.element.space_dimensionJ
+dim = V.element.space_dimension
 
 
 # Map to physical reference frame
@@ -157,14 +157,14 @@ def tabulate_A(A_, w_, c_, coords_, entity_local_index, quadrature_permutation=N
                 B_T[1, 1] = dphidx_T[1, 1]
                 B_T[2, 2] = dphidx_T[2, 2]
 
-                B_T[1, 3] = dphidx_T[2, 2]
-                B_T[2, 3] = dphidx_T[1, 1]
+                B_T[0, 3] = dphidx_T[1, 1]
+                B_T[1, 3] = dphidx_T[0, 0]
 
                 B_T[0, 4] = dphidx_T[2, 2]
                 B_T[2, 4] = dphidx_T[0, 0]
 
-                B_T[0, 5] = dphidx_T[1, 1]
-                B_T[1, 5] = dphidx_T[0, 0]
+                B_T[1, 5] = dphidx_T[2, 2]
+                B_T[2, 5] = dphidx_T[1, 1]
 
                 # Repeat above for B matrix
                 for p in range(3):
@@ -184,14 +184,15 @@ def tabulate_A(A_, w_, c_, coords_, entity_local_index, quadrature_permutation=N
                 B[1, 1] = dphidx[1, 1]
                 B[2, 2] = dphidx[2, 2]
 
-                B[3, 1] = dphidx[2, 2]
-                B[3, 2] = dphidx[1, 1]
+                # Correct version
+                B[3, 0] = dphidx[1, 1]
+                B[3, 1] = dphidx[0, 0]
 
                 B[4, 0] = dphidx[2, 2]
                 B[4, 2] = dphidx[0, 0]
 
-                B[5, 0] = dphidx[1, 1]
-                B[5, 1] = dphidx[0, 0]
+                B[5, 1] = dphidx[2, 2]
+                B[5, 2] = dphidx[1, 1]
 
                 # C = B.T * D  (3x6 * 6x6 = 3x6)
 
@@ -275,14 +276,14 @@ def tabulate_b(b_, w_, c_, coords_, entity_local_index, quadrature_permutation=N
             B_T[1, 1] = dphidx_T[1, 1]
             B_T[2, 2] = dphidx_T[2, 2]
 
-            B_T[1, 3] = dphidx_T[2, 2]
-            B_T[2, 3] = dphidx_T[1, 1]
+            B_T[0, 3] = dphidx_T[1, 1]
+            B_T[1, 3] = dphidx_T[0, 0]
 
             B_T[0, 4] = dphidx_T[2, 2]
             B_T[2, 4] = dphidx_T[0, 0]
 
-            B_T[0, 5] = dphidx_T[1, 1]
-            B_T[1, 5] = dphidx_T[0, 0]
+            B_T[1, 5] = dphidx_T[2, 2]
+            B_T[2, 5] = dphidx_T[1, 1]
 
             # Assemble RHS
             for j in range(3):
